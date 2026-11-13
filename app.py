@@ -3,7 +3,7 @@ from neo4j import GraphDatabase
 import pandas as pd
 import json
 
-# 1. Конфигурация страницы
+# 1. Page Configuration
 st.set_page_config(
     page_title="CMC Control Tower — Project Aster",
     page_icon="🧬",
@@ -11,7 +11,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Подключение к Neo4j AuraDB из Streamlit Secrets
+# Connect to Neo4j AuraDB from Streamlit Secrets
 @st.cache_resource
 def get_neo4j_driver():
     uri = st.secrets["NEO4J_URI"]
@@ -26,7 +26,7 @@ def run_query(query, parameters=None):
         result = session.run(query, parameters or {})
         return [record.data() for record in result]
 
-# Загрузка данных активностей из Neo4j
+# Load activities data from Neo4j
 @st.cache_data(ttl=60)
 def load_activities():
     query = """
@@ -52,11 +52,11 @@ def load_activities():
 
 df_activities = load_activities()
 
-# Верхний заголовок
+# Top Header
 st.title("🧬 CMC Control Tower — Project Aster (ASTER-P1)")
 st.caption("Graph-driven Program & Execution Model for Pharmaceutical Development (Handoff v0.3)")
 
-# Навигация по вкладкам (5 разделов)
+# Navigation Tabs (5 sections)
 tab_overview, tab_execution, tab_simulation, tab_inbox, tab_setup = st.tabs([
     "📊 Programme Overview", 
     "📋 Execution Overview", 
@@ -83,7 +83,7 @@ with tab_overview:
         st.metric("Programme Health", "ON TRACK", delta="Stable")
     
     st.divider()
-    st.info("💡 **Project Aster Status:** Программа находится на стадии клинических поставок и аналитической квалификации. Критический путь проходит через аналитические методы (ACT-023) и финальную подачу IND.")
+    st.info("💡 **Project Aster Status:** Programme is in the clinical supply and analytical qualification stage. The critical path runs through analytical methods (ACT-023) and final IND submission.")
     
     if not df_activities.empty:
         st.markdown("### Workstream Breakdown")
@@ -92,14 +92,13 @@ with tab_overview:
         st.dataframe(ws_counts, use_container_width=True)
 
 # ==========================================
-# TAB 2: EXECUTION OVERVIEW (Операционный вид)
+# TAB 2: EXECUTION OVERVIEW
 # ==========================================
 with tab_execution:
     st.subheader("Operational Execution Board")
-    st.write("Отслеживание текущего статуса выполнения задач, зон ответственности (Owner / Performer) и блокеров независимо от диаграммы Ганта.")
+    st.write("Tracking current task execution status, accountability (Owner / Performer), and blockers independently of the Gantt chart.")
     
     if not df_activities.empty:
-        # Фильтры
         f_col1, f_col2, f_col3 = st.columns(3)
         with f_col1:
             selected_ws = st.selectbox("Filter by Workstream", ["All"] + list(df_activities['workstream'].unique()))
@@ -122,10 +121,10 @@ with tab_execution:
             hide_index=True
         )
     else:
-        st.warning("База данных активностей пуста. Выполните сидинг через `seed.py`.")
+        st.warning("Activity database is empty. Please run seeding via `seed.py`.")
 
 # ==========================================
-# TAB 3: PLAN & SIMULATION (What-If Гант)
+# TAB 3: PLAN & SIMULATION
 # ==========================================
 with tab_simulation:
     st.subheader("What-If Delay Simulation & Cascade Impact")
@@ -141,10 +140,10 @@ with tab_simulation:
             delay_days = st.number_input("Delay (days)", min_value=0, max_value=90, value=0)
             
             if st.button("Apply Delay (In-Memory Simulation)", type="primary"):
-                st.success(f"Симуляция для {selected_act} на +{delay_days} дней успешно рассчитана в памяти!")
+                st.success(f"Simulation for {selected_act} by +{delay_days} days successfully calculated in memory!")
             
             if st.button("Reset to Baseline"):
-                st.info("Сброшено к базовому расписанию.")
+                st.info("Reset to baseline schedule.")
 
     with col_res:
         st.markdown("#### Baseline vs Forecast Timeline")
@@ -160,19 +159,18 @@ with tab_simulation:
 # ==========================================
 with tab_inbox:
     st.subheader("Programme Update Inbox & AI Extraction")
-    st.write("Вставьте текст коммуникации (саммари со встречи Teams Copilot, письмо от CDMO или письмо поставщика), чтобы извлечь предложения по обновлению плана.")
+    st.write("Paste communication text (Teams Copilot meeting summary, CDMO letter, or supplier email) to extract plan update proposals.")
     
     raw_input_text = st.text_area("Paste unstructured update / meeting notes / email text here:", height=150, placeholder="Example: CDMO Northbridge reported that chromatography resin delivery (MAT-002) is delayed by 4 days due to customs clearance...")
     
     if st.button("Extract Proposals with Gemini AI", type="primary"):
         if raw_input_text.strip():
-            with st.spinner("Анализ текста и сопоставление с графом Project Aster..."):
-                # Заглушка под будущий вызов Gemini API Structured Output
-                st.success("AI успешно проанализировал текст и сформировал 1 предложение (Proposal)")
+            with st.spinner("Analyzing text and mapping to Project Aster graph..."):
+                st.success("AI successfully analyzed text and generated 1 proposal")
                 
                 with st.expander("Proposal PROP-001 (Pending Review)", expanded=True):
                     st.markdown("**Target Activity:** `ACT-007` (Raw Material Procurement)")
-                    st.markdown("**Extracted Fact:** Задержка поставки сырья на 4 дня.")
+                    st.markdown("**Extracted Fact:** Raw material delivery delayed by 4 days.")
                     st.markdown("> *«Resin shipment delayed by 4 days due to customs...»* (Source: `DOC-010`)")
                     
                     col_acc, col_rej = st.columns(2)
@@ -181,14 +179,14 @@ with tab_inbox:
                     with col_rej:
                         st.button("Reject", key="reject_1")
         else:
-            st.warning("Пожалуйста, введите текст для анализа.")
+            st.warning("Please enter text for analysis.")
 
 # ==========================================
 # TAB 5: PROGRAMME SETUP
 # ==========================================
 with tab_setup:
     st.subheader("Programme Setup & Blueprint Configuration")
-    st.write("Управление конфигурацией проекта, связями зависимостей и подключением к Neo4j AuraDB.")
+    st.write("Managing project configuration, dependency links, and Neo4j AuraDB connection.")
     
     st.text_input("Neo4j URI", value=st.secrets.get("NEO4J_URI", ""), disabled=True)
     st.text_input("Neo4j Database", value=st.secrets.get("NEO4J_DATABASE", "neo4j"), disabled=True)
@@ -196,6 +194,6 @@ with tab_setup:
     if st.button("Test Database Connection"):
         try:
             run_query("RETURN 1 AS test")
-            st.success("Соединение с Neo4j AuraDB установлено успешно!")
+            st.success("Connection to Neo4j AuraDB established successfully!")
         except Exception as e:
-            st.error(f"Ошибка подключения: {e}")
+            st.error(f"Connection error: {e}")
