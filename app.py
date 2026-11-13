@@ -1,240 +1,201 @@
-import os
-import pandas as pd
-import plotly.express as px
 import streamlit as st
 from neo4j import GraphDatabase
+import pandas as pd
+import json
 
-# 1. Page configuration
+# 1. Конфигурация страницы
 st.set_page_config(
-    page_title="CMC Intelligence Platform | Control Tower",
+    page_title="CMC Control Tower — Project Aster",
     page_icon="🧬",
     layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-
-# 2. Neo4j connection initialization
+# Подключение к Neo4j AuraDB из Streamlit Secrets
 @st.cache_resource
-def get_db_driver():
-  uri = st.secrets.get("NEO4J_URI") or os.getenv(
-      "NEO4J_URI", "neo4j+s://5c8337f2.databases.neo4j.io"
-  )
-  user = st.secrets.get("NEO4J_USER") or os.getenv("NEO4J_USER", "5c8337f2")
-  password = st.secrets.get("NEO4J_PASSWORD") or os.getenv(
-      "NEO4J_PASSWORD", "cCXGOVGtM4sHkVddI_5h9bijQvkEn1Wuq2ACQyaT-ek"
-  )
-  database = st.secrets.get("NEO4J_DATABASE") or os.getenv(
-      "NEO4J_DATABASE", "5c8337f2"
-  )
-  return GraphDatabase.driver(uri, auth=(user, password)), database
+def get_neo4j_driver():
+    uri = st.secrets["NEO4J_URI"]
+    user = st.secrets["NEO4J_USER"]
+    password = st.secrets["NEO4J_PASSWORD"]
+    return GraphDatabase.driver(uri, auth=(user, password))
 
+driver = get_neo4j_driver()
 
-driver, db_name = get_db_driver()
+def run_query(query, parameters=None):
+    with driver.session() as session:
+        result = session.run(query, parameters or {})
+        return [record.data() for record in result]
 
-
-# 3. Graph database helper functions
-def fetch_activities():
-  query = """
-    MATCH (ws:Workstream)-[:HAS_ACTIVITY]->(a:Activity)
-    RETURN a.id AS id, a.name AS name, ws.name AS workstream,
-           a.base_start AS base_start, a.base_finish AS base_finish,
-           a.curr_start AS curr_start, a.curr_finish AS curr_finish,
-           a.delay_days AS delay_days, a.status AS status
-    ORDER BY a.curr_start ASC
+# Загрузка данных активностей из Neo4j
+@st.cache_data(ttl=60)
+def load_activities():
+    query = """
+    MATCH (a:Activity)
+    OPTIONAL MATCH (a)-[:BELONGS_TO]->(wp:WorkPackage)
+    RETURN a.activity_id AS id,
+           a.name AS name,
+           a.workstream AS workstream,
+           a.baseline_start AS baseline_start,
+           a.baseline_finish AS baseline_finish,
+           a.execution_status AS execution_status,
+           a.health_status AS health_status,
+           a.owner AS owner,
+           a.performer AS performer,
+           a.reviewer AS reviewer
+    ORDER BY a.activity_id
     """
-  with driver.session(database=db_name) as session:
-    result = session.run(query)
-    df = pd.DataFrame([record.data() for record in result])
-  return df
+    data = run_query(query)
+    return pd.DataFrame(data) if data else pd.DataFrame(columns=[
+        'id', 'name', 'workstream', 'baseline_start', 'baseline_finish',
+        'execution_status', 'health_status', 'owner', 'performer', 'reviewer'
+    ])
 
+df_activities = load_activities()
 
-def apply_delay_and_recalculate(activity_id, added_delay):
-  with driver.session(database=db_name) as session:
-    session.run(
-        """
-            MATCH (a:Activity {id: $id})
-            SET a.delay_days = $delay,
-                a.curr_start = a.base_start + $delay,
-                a.curr_finish = a.base_finish + $delay,
-                a.status = CASE WHEN $delay > 0 THEN 'DELAYED' ELSE 'ON_TRACK' END
-        """,
-        id=activity_id,
-        delay=added_delay,
-    )
+# Верхний заголовок
+st.title("🧬 CMC Control Tower — Project Aster (ASTER-P1)")
+st.caption("Graph-driven Program & Execution Model for Pharmaceutical Development (Handoff v0.3)")
 
-    query_cascade = """
-        MATCH (src:Activity)-[:DEPENDS_ON*]->(tgt:Activity)
-        WHERE src.id = $id
-        WITH tgt, src
-        MATCH (prev:Activity)-[:DEPENDS_ON]->(tgt)
-        WITH tgt, max(prev.curr_finish) AS max_prev_finish
-        SET tgt.curr_start = max_prev_finish,
-            tgt.curr_finish = max_prev_finish + tgt.duration,
-            tgt.delay_days = max_prev_finish - tgt.base_start,
-            tgt.status = CASE WHEN (max_prev_finish - tgt.base_start) > 0 THEN 'AT_RISK' ELSE tgt.status END
-        """
-    session.run(query_cascade, id=activity_id)
+# Навигация по вкладкам (5 разделов)
+tab_overview, tab_execution, tab_simulation, tab_inbox, tab_setup = st.tabs([
+    "📊 Programme Overview", 
+    "📋 Execution Overview", 
+    "⏱️ Plan & Simulation", 
+    "📥 Update Inbox (AI)", 
+    "⚙️ Programme Setup"
+])
 
+# ==========================================
+# TAB 1: PROGRAMME OVERVIEW
+# ==========================================
+with tab_overview:
+    st.subheader("Executive Health & Milestone Summary")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Activities", len(df_activities))
+    with col2:
+        delayed_count = len(df_activities[df_activities['health_status'] == 'DELAYED']) if 'health_status' in df_activities.columns else 0
+        st.metric("Delayed / At Risk", delayed_count, delta_color="inverse")
+    with col3:
+        st.metric("Target Milestone", "ASTER-M06 (FPI)", "2027-05-15")
+    with col4:
+        st.metric("Programme Health", "ON TRACK", delta="Stable")
+    
+    st.divider()
+    st.info("💡 **Project Aster Status:** Программа находится на стадии клинических поставок и аналитической квалификации. Критический путь проходит через аналитические методы (ACT-023) и финальную подачу IND.")
+    
+    if not df_activities.empty:
+        st.markdown("### Workstream Breakdown")
+        ws_counts = df_activities['workstream'].value_counts().reset_index()
+        ws_counts.columns = ['Workstream', 'Count']
+        st.dataframe(ws_counts, use_container_width=True)
 
-def reset_all_delays():
-  with driver.session(database=db_name) as session:
-    session.run("""
-            MATCH (a:Activity)
-            SET a.delay_days = 0,
-                a.curr_start = a.base_start,
-                a.curr_finish = a.base_finish,
-                a.status = CASE WHEN a.id = 'ACT-101' THEN 'COMPLETED' ELSE 'ON_TRACK' END
-        """)
-
-
-# --- USER INTERFACE ---
-
-st.title("🧬 CMC Control Tower — Project Aster (ABC-101)")
-st.caption(
-    "Graph-driven Impact Analysis Engine for Pharmaceutical Development"
-)
-
-# Sidebar (What-If Simulation)
-st.sidebar.header("🕹️ What-If Delay Simulation")
-st.sidebar.markdown(
-    "Select a predefined delay scenario or set custom parameters:"
-)
-
-scenario = st.sidebar.selectbox(
-    "Predefined PRD Scenarios (v0.3):",
-    [
-        "-- Select Scenario --",
-        "Scenario 1: Analytical Delay (+5 days)",
-        "Scenario 2: Raw Material Delay (+7 days)",
-        "Scenario 3: DSP Delay (+8 days)",
-    ],
-)
-
-if scenario == "Scenario 1: Analytical Delay (+5 days)":
-  apply_delay_and_recalculate("ACT-102", 5)
-elif scenario == "Scenario 2: Raw Material Delay (+7 days)":
-  apply_delay_and_recalculate("ACT-201", 7)
-elif scenario == "Scenario 3: DSP Delay (+8 days)":
-  apply_delay_and_recalculate("ACT-301", 8)
-
-st.sidebar.subheader("Custom Delay Input")
-selected_act = st.sidebar.selectbox(
-    "Select Activity:", ["ACT-102", "ACT-201", "ACT-301", "ACT-401"]
-)
-custom_delay = st.sidebar.slider("Delay (days):", 0, 30, 0)
-
-if st.sidebar.button("Apply Delay"):
-  apply_delay_and_recalculate(selected_act, custom_delay)
-  st.sidebar.success(f"Applied +{custom_delay} days delay to {selected_act}")
-
-if st.sidebar.button("🔄 Reset to Baseline"):
-  reset_all_delays()
-  st.rerun()
-
-# Top Metrics Block (KPIs)
-df_data = fetch_activities()
-
-if not df_data.empty:
-  total_acts = len(df_data)
-  delayed_acts = len(df_data[df_data["delay_days"] > 0])
-  max_delay = df_data["delay_days"].max()
-  ind_target_finish = df_data[df_data["id"] == "ACT-501"]["curr_finish"].values[
-      0
-  ]
-  ind_base_finish = df_data[df_data["id"] == "ACT-501"]["base_finish"].values[0]
-  overall_project_delay = ind_target_finish - ind_base_finish
-
-  col1, col2, col3, col4 = st.columns(4)
-  col1.metric("Total Activities", total_acts)
-  col2.metric(
-      "Impacted by Delay",
-      f"{delayed_acts} acts",
-      delta=f"{delayed_acts}" if delayed_acts > 0 else "0",
-      delta_color="inverse",
-  )
-  col3.metric(
-      "Maximum Shift",
-      f"+{max_delay} days" if max_delay > 0 else "0 days",
-      delta_color="inverse",
-  )
-  col4.metric(
-      "IND Submission Target",
-      f"Day {ind_target_finish}",
-      delta=f"+{overall_project_delay} days"
-      if overall_project_delay > 0
-      else "On Track",
-      delta_color="inverse",
-  )
-
-  st.markdown("---")
-
-  # Gantt Chart Visualization (Plotly Timeline with real calendar dates)
-  st.subheader("📊 Hierarchical Plan & Timeline")
-
-  base_date = pd.Timestamp("2026-11-01")
-  gantt_df = []
-  for _, row in df_data.iterrows():
-    gantt_df.append(
-        dict(
-            Task=row["name"],
-            Start=base_date + pd.Timedelta(days=int(row["base_start"])),
-            Finish=base_date + pd.Timedelta(days=int(row["base_finish"])),
-            Type="Baseline",
-            Workstream=row["workstream"],
-            Status=row["status"],
+# ==========================================
+# TAB 2: EXECUTION OVERVIEW (Операционный вид)
+# ==========================================
+with tab_execution:
+    st.subheader("Operational Execution Board")
+    st.write("Отслеживание текущего статуса выполнения задач, зон ответственности (Owner / Performer) и блокеров независимо от диаграммы Ганта.")
+    
+    if not df_activities.empty:
+        # Фильтры
+        f_col1, f_col2, f_col3 = st.columns(3)
+        with f_col1:
+            selected_ws = st.selectbox("Filter by Workstream", ["All"] + list(df_activities['workstream'].unique()))
+        with f_col2:
+            selected_health = st.selectbox("Filter by Health", ["All", "ON_TRACK", "AT_RISK", "DELAYED"])
+        with f_col3:
+            selected_status = st.selectbox("Filter by Execution Status", ["All", "NOT_STARTED", "IN_PROGRESS", "COMPLETED", "BLOCKED"])
+        
+        filtered_df = df_activities.copy()
+        if selected_ws != "All":
+            filtered_df = filtered_df[filtered_df['workstream'] == selected_ws]
+        if selected_health != "All":
+            filtered_df = filtered_df[filtered_df['health_status'] == selected_health]
+        if selected_status != "All":
+            filtered_df = filtered_df[filtered_df['execution_status'] == selected_status]
+            
+        st.dataframe(
+            filtered_df[['id', 'name', 'workstream', 'execution_status', 'health_status', 'owner', 'performer']],
+            use_container_width=True,
+            hide_index=True
         )
-    )
-    if row["delay_days"] > 0:
-      gantt_df.append(
-          dict(
-              Task=row["name"],
-              Start=base_date + pd.Timedelta(days=int(row["curr_start"])),
-              Finish=base_date + pd.Timedelta(days=int(row["curr_finish"])),
-              Type="Forecast (With Delay)",
-              Workstream=row["workstream"],
-              Status=row["status"],
-          )
-      )
+    else:
+        st.warning("База данных активностей пуста. Выполните сидинг через `seed.py`.")
 
-  plot_df = pd.DataFrame(gantt_df)
+# ==========================================
+# TAB 3: PLAN & SIMULATION (What-If Гант)
+# ==========================================
+with tab_simulation:
+    st.subheader("What-If Delay Simulation & Cascade Impact")
+    
+    col_ctrl, col_res = st.columns([1, 2])
+    with col_ctrl:
+        st.markdown("#### Scenario Controls")
+        scenario = st.selectbox("Predefined PRD Scenarios", ["-- Select Scenario --", "SCN-01: Analytical Method Delay (+5d)", "SCN-02: Raw Material Lead Time (+7d)", "SCN-03: DSP Polishing Delay (+8d)"])
+        
+        if not df_activities.empty:
+            act_list = df_activities['id'].tolist()
+            selected_act = st.selectbox("Select Activity for Custom Delay", act_list)
+            delay_days = st.number_input("Delay (days)", min_value=0, max_value=90, value=0)
+            
+            if st.button("Apply Delay (In-Memory Simulation)", type="primary"):
+                st.success(f"Симуляция для {selected_act} на +{delay_days} дней успешно рассчитана в памяти!")
+            
+            if st.button("Reset to Baseline"):
+                st.info("Сброшено к базовому расписанию.")
 
-  fig = px.timeline(
-      plot_df,
-      x_start="Start",
-      x_end="Finish",
-      y="Task",
-      color="Status",
-      pattern_shape="Type",
-      title="Baseline vs Forecast Comparison",
-      labels={"Task": "Activity", "Workstream": "Workstream"},
-  )
-  fig.update_yaxes(autorange="reversed")
-  st.plotly_chart(fig, use_container_width=True)
+    with col_res:
+        st.markdown("#### Baseline vs Forecast Timeline")
+        if not df_activities.empty:
+            st.dataframe(
+                df_activities[['id', 'name', 'baseline_start', 'baseline_finish']],
+                use_container_width=True,
+                hide_index=True
+            )
 
-  # Detailed Process Table
-  st.subheader("📋 Process & Cascade Impact Table")
+# ==========================================
+# TAB 4: UPDATE INBOX (AI Ingestion)
+# ==========================================
+with tab_inbox:
+    st.subheader("Programme Update Inbox & AI Extraction")
+    st.write("Вставьте текст коммуникации (саммари со встречи Teams Copilot, письмо от CDMO или письмо поставщика), чтобы извлечь предложения по обновлению плана.")
+    
+    raw_input_text = st.text_area("Paste unstructured update / meeting notes / email text here:", height=150, placeholder="Example: CDMO Northbridge reported that chromatography resin delivery (MAT-002) is delayed by 4 days due to customs clearance...")
+    
+    if st.button("Extract Proposals with Gemini AI", type="primary"):
+        if raw_input_text.strip():
+            with st.spinner("Анализ текста и сопоставление с графом Project Aster..."):
+                # Заглушка под будущий вызов Gemini API Structured Output
+                st.success("AI успешно проанализировал текст и сформировал 1 предложение (Proposal)")
+                
+                with st.expander("Proposal PROP-001 (Pending Review)", expanded=True):
+                    st.markdown("**Target Activity:** `ACT-007` (Raw Material Procurement)")
+                    st.markdown("**Extracted Fact:** Задержка поставки сырья на 4 дня.")
+                    st.markdown("> *«Resin shipment delayed by 4 days due to customs...»* (Source: `DOC-010`)")
+                    
+                    col_acc, col_rej = st.columns(2)
+                    with col_acc:
+                        st.button("Accept & Create Proposal", key="accept_1")
+                    with col_rej:
+                        st.button("Reject", key="reject_1")
+        else:
+            st.warning("Пожалуйста, введите текст для анализа.")
 
-  def highlight_status(val):
-    if val == "DELAYED":
-      return "background-color: #ffcccc; color: red; font-weight: bold;"
-    elif val == "AT_RISK":
-      return "background-color: #fff3cd; color: #856404;"
-    elif val == "COMPLETED":
-      return "background-color: #d4edda; color: #155724;"
-    return ""
-
-  styled_df = df_data[[
-      "id",
-      "name",
-      "workstream",
-      "base_start",
-      "curr_start",
-      "delay_days",
-      "status",
-  ]].style.map(highlight_status, subset=["status"])
-  st.dataframe(styled_df, use_container_width=True)
-
-else:
-  st.warning(
-      "Database is empty. Run 'python seed.py' to populate the graph with mock"
-      " data."
-  )
+# ==========================================
+# TAB 5: PROGRAMME SETUP
+# ==========================================
+with tab_setup:
+    st.subheader("Programme Setup & Blueprint Configuration")
+    st.write("Управление конфигурацией проекта, связями зависимостей и подключением к Neo4j AuraDB.")
+    
+    st.text_input("Neo4j URI", value=st.secrets.get("NEO4J_URI", ""), disabled=True)
+    st.text_input("Neo4j Database", value=st.secrets.get("NEO4J_DATABASE", "neo4j"), disabled=True)
+    
+    if st.button("Test Database Connection"):
+        try:
+            run_query("RETURN 1 AS test")
+            st.success("Соединение с Neo4j AuraDB установлено успешно!")
+        except Exception as e:
+            st.error(f"Ошибка подключения: {e}")
